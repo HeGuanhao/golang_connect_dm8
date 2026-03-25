@@ -1,0 +1,14 @@
+# Go 编译产物
+bin/
+pkg/
+
+# 编译输出
+*.exe
+*.out
+
+# IDE
+.idea/
+*.iml
+
+# 环境
+.env

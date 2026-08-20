@@ -4,6 +4,7 @@ import (
 	_ "dm"
 	"fmt"
 	"log"
+	"time"
 )
 
 func main() {
@@ -12,7 +13,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("init db failed: %v", err)
 	}
-	defer closeDB(db)
+	defer func() {
+		if err := closeDB(db); err != nil {
+			log.Printf("close db error: %v", err)
+		}
+	}()
 
 	// ── 1. 查询 Schema 信息 ──────────────────────────────────────
 	fmt.Println("\n[1] Schema Info")
@@ -28,6 +33,9 @@ func main() {
 	if err = createProductTable(db); err != nil {
 		log.Printf("createProductTable error: %v", err)
 	}
+	if err = listColumns(db, "SYSDBA", "PRODUCT"); err != nil {
+		log.Printf("listColumns error: %v", err)
+	}
 
 	// ── 3. 单条插入 ───────────────────────────────────────────────
 	fmt.Println("\n[3] Insert Product")
@@ -35,6 +43,7 @@ func main() {
 		Name:        "三国演义",
 		Author:      "罗贯中",
 		Publisher:   "中华书局",
+		PublishTime: time.Date(2005, 4, 1, 0, 0, 0, 0, time.Local),
 		ProductNo:   "9787101046121",
 		OrigPrice:   19.0,
 		NowPrice:    15.2,

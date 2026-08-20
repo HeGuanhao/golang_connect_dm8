@@ -13,9 +13,10 @@ func txInsertProducts(db *sql.DB) error {
 		return fmt.Errorf("begin tx failed: %w", err)
 	}
 
-	// 出现错误时自动回滚
+	// 提交后 Rollback 是安全的 no-op；未提交时自动回滚
+	committed := false
 	defer func() {
-		if err != nil {
+		if !committed {
 			_ = tx.Rollback()
 			fmt.Println("transaction rolled back.")
 		}
@@ -26,9 +27,9 @@ func txInsertProducts(db *sql.DB) error {
 		description,type,papertotal,wordtotal,sellstarttime,sellendtime)
 		VALUES(:1,:2,:3,:4,:5,:6,:7,:8,:9,:10,:11,:12,:13,:14,:15,:16)`
 
-	t1, _ := time.Parse("2006-01-02", "2000-01-01")
-	t2, _ := time.Parse("2006-01-02", "2001-01-01")
-	t3, _ := time.Parse("2006-01-02", "1900-01-01")
+	publishTime := time.Date(2000, 1, 1, 0, 0, 0, 0, time.Local)
+	sellStart := time.Date(2001, 1, 1, 0, 0, 0, 0, time.Local)
+	sellEnd := time.Date(2099, 12, 31, 0, 0, 0, 0, time.Local)
 
 	books := []struct{ name, author, no string }{
 		{"水浒传", "施耐庵", "9787020015016"},
@@ -45,9 +46,9 @@ func txInsertProducts(db *sql.DB) error {
 
 	for _, b := range books {
 		if _, err = tx.Exec(sqlStr,
-			b.name, b.author, "人民文学出版社", t1,
+			b.name, b.author, "人民文学出版社", publishTime,
 			4, b.no, 10, 39.0, 29.0, 7.5,
-			b.name+"是中国古典四大名著之一。", "25", 800, 80000, t2, t3,
+			b.name+"是中国古典四大名著之一。", "25", 800, 80000, sellStart, sellEnd,
 		); err != nil {
 			return fmt.Errorf("tx insert [%s] failed: %w", b.name, err)
 		}
@@ -57,6 +58,7 @@ func txInsertProducts(db *sql.DB) error {
 	if err = tx.Commit(); err != nil {
 		return fmt.Errorf("tx commit failed: %w", err)
 	}
+	committed = true
 	fmt.Println("transaction committed.")
 	return nil
 }
@@ -68,8 +70,9 @@ func txTransferDemo(db *sql.DB, fromID, toID int, amount float64) error {
 		return fmt.Errorf("begin tx failed: %w", err)
 	}
 
+	committed := false
 	defer func() {
-		if err != nil {
+		if !committed {
 			_ = tx.Rollback()
 			fmt.Println("transfer rolled back.")
 		}
@@ -94,6 +97,7 @@ func txTransferDemo(db *sql.DB, fromID, toID int, amount float64) error {
 	if err = tx.Commit(); err != nil {
 		return fmt.Errorf("tx commit failed: %w", err)
 	}
+	committed = true
 	fmt.Printf("transfer %.2f from product#%d to product#%d succeed.\n", amount, fromID, toID)
 	return nil
 }

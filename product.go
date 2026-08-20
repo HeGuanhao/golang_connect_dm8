@@ -2,7 +2,9 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -65,14 +67,17 @@ func insertProduct(db *sql.DB, p Product) (int64, error) {
 		description,type,papertotal,wordtotal,sellstarttime,sellendtime)
 		VALUES(:1,:2,:3,:4,:5,:6,:7,:8,:9,:10,:11,:12,:13,:14,:15,:16)`
 
-	t1, _ := time.Parse("2006-01-02", "2005-04-01")
-	t2, _ := time.Parse("2006-01-02", "2006-03-20")
-	t3, _ := time.Parse("2006-01-02", "1900-01-01")
+	publishTime := p.PublishTime
+	if publishTime.IsZero() {
+		publishTime = time.Now()
+	}
+	sellStart := time.Now()
+	sellEnd := time.Date(2099, 12, 31, 0, 0, 0, 0, time.Local)
 
 	result, err := db.Exec(sqlStr,
-		p.Name, p.Author, p.Publisher, t1,
+		p.Name, p.Author, p.Publisher, publishTime,
 		4, p.ProductNo, 10, p.OrigPrice, p.NowPrice, p.Discount,
-		p.Description, "25", 943, 93000, t2, t3,
+		p.Description, "25", 943, 93000, sellStart, sellEnd,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("insert product failed: %w", err)
@@ -93,12 +98,18 @@ func updateProduct(db *sql.DB, productID int, newName string) error {
 	if err != nil {
 		return fmt.Errorf("update product failed: %w", err)
 	}
-	rows, _ := result.RowsAffected()
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("get rows affected failed: %w", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("no product found with id=%d", productID)
+	}
 	fmt.Printf("updateProduct succeed, rows affected=%d\n", rows)
 	return nil
 }
 
-// queryProduct 查询单条产品
+// queryProduct 查询单条产品（含 CLOB 内容）
 func queryProduct(db *sql.DB, productID int) error {
 	sqlStr := "SELECT productid,name,author,description,photo FROM SYSDBA.product WHERE productid=:1"
 	rows, err := db.Query(sqlStr, productID)
@@ -118,24 +129,54 @@ func queryProduct(db *sql.DB, productID int) error {
 		if err = rows.Scan(&id, &name, &author, &description, &photo); err != nil {
 			return fmt.Errorf("scan product failed: %w", err)
 		}
+		desc, err := readClob(&description)
+		if err != nil {
+			return fmt.Errorf("read description clob failed: %w", err)
+		}
 		blobLen, _ := photo.GetLength()
-		fmt.Printf("  id=%-5d name=%-20s author=%-15s descLen=%v photoLen=%d\n",
-			id, name, author, description, blobLen)
+		fmt.Printf("  id=%d name=%s author=%s\n  description=%s\n  photoLen=%d\n",
+			id, name, author, desc, blobLen)
+	}
+	if err = rows.Err(); err != nil {
+		return err
 	}
 	if !found {
 		fmt.Printf("  no product found with id=%d\n", productID)
 	}
-	return rows.Err()
+	return nil
 }
 
-// queryAllProducts 查询所有产品（分页，DM8 用 ROWNUM 实现）
+// readClob 读取 DmClob 全部内容（位置从 1 开始）
+func readClob(clob *dm.DmClob) (string, error) {
+	length, err := clob.GetLength()
+	if err != nil {
+		return "", err
+	}
+	if length == 0 {
+		return "", nil
+	}
+	s, err := clob.ReadString(1, int(length))
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	return s, nil
+}
+
+// queryAllProducts 查询所有产品（分页）
+// 注意：ROWNUM 在 ORDER BY 之前分配，必须先在内层排序、外层再用 ROWNUM 过滤，
+// 否则分页结果顺序不确定。
 func queryAllProducts(db *sql.DB, page, pageSize int) error {
+	if page < 1 || pageSize < 1 {
+		return fmt.Errorf("invalid pagination: page=%d pageSize=%d", page, pageSize)
+	}
 	offset := (page-1)*pageSize + 1
 	end := page * pageSize
 	sqlStr := `SELECT productid, name, author, originalprice, nowprice FROM (
-	               SELECT ROWNUM rn, productid, name, author, originalprice, nowprice
-	               FROM SYSDBA.product ORDER BY productid
-	           ) WHERE rn >= :1 AND rn <= :2`
+		           SELECT ROWNUM rn, t.* FROM (
+		               SELECT productid, name, author, originalprice, nowprice
+		               FROM SYSDBA.product ORDER BY productid
+		           ) t
+		       ) WHERE rn >= :1 AND rn <= :2`
 	rows, err := db.Query(sqlStr, offset, end)
 	if err != nil {
 		return fmt.Errorf("query all products failed: %w", err)
@@ -143,6 +184,7 @@ func queryAllProducts(db *sql.DB, page, pageSize int) error {
 	defer rows.Close()
 
 	fmt.Printf("=== Products (page=%d, size=%d) ===\n", page, pageSize)
+	count := 0
 	for rows.Next() {
 		var id int
 		var name, author string
@@ -150,10 +192,17 @@ func queryAllProducts(db *sql.DB, page, pageSize int) error {
 		if err = rows.Scan(&id, &name, &author, &origPrice, &nowPrice); err != nil {
 			return fmt.Errorf("scan product row failed: %w", err)
 		}
+		count++
 		fmt.Printf("  id=%-5d name=%-20s author=%-15s price=%.2f->%.2f\n",
 			id, name, author, origPrice, nowPrice)
 	}
-	return rows.Err()
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	if count == 0 {
+		fmt.Println("  (empty page)")
+	}
+	return nil
 }
 
 // deleteProduct 删除产品
@@ -163,7 +212,13 @@ func deleteProduct(db *sql.DB, productID int) error {
 	if err != nil {
 		return fmt.Errorf("delete product failed: %w", err)
 	}
-	rows, _ := result.RowsAffected()
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("get rows affected failed: %w", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("no product found with id=%d", productID)
+	}
 	fmt.Printf("deleteProduct succeed, rows affected=%d\n", rows)
 	return nil
 }

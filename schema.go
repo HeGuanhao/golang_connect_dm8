@@ -65,15 +65,11 @@ func listColumns(db *sql.DB, schema, table string) error {
 	fmt.Printf("=== Columns of [%s.%s] ===\n", schema, table)
 	for rows.Next() {
 		var colName, dataType string
-		var nullable int
+		var nullable string // DM8 中 NULLABLE$ 为 'Y'/'N' 字符
 		if err := rows.Scan(&colName, &dataType, &nullable); err != nil {
 			return fmt.Errorf("scan column failed: %w", err)
 		}
-		nullableStr := "Y"
-		if nullable == 0 {
-			nullableStr = "N"
-		}
-		fmt.Printf("  %-30s %-20s nullable=%s\n", colName, dataType, nullableStr)
+		fmt.Printf("  %-30s %-20s nullable=%s\n", colName, dataType, nullable)
 	}
 	return rows.Err()
 }
